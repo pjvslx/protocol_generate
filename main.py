@@ -17,5 +17,5 @@ if __name__ == "__main__":
 
     # { "id":"uint32" , "sex" ; "int32" , "age" : "int" , "name" : "string"}
     fp = open("PacketStruct.h","w+")
-    input_str = '{ "id":"uint32" , "sex" : "int32" , "age" : "int" , "name" : "string" , "AccountInfo":"AccountInfo"}'
+    input_str = [["id","uint32"],["sex","int32"],["age","int"],["name","string"],["vecInt",["AccountInfo"]],["mapHis",["int","PlayerInfo"]]];
     nf_tools.generate_struct(fp,input_str,"C2GM_test")
