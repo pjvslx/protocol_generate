@@ -21,6 +21,50 @@ import os
 import util
 
 data_type = ["uint8","int8","uint16","int16","uint32","int32","int","uint64","int64","string","bool"]
+read_func = ["readChar","readChar","readShort","readShort","readInt","readInt","readInt","readInt64","readInt64","readString","readBool"]
+write_func = ["writeChar","writeChar","writeShort","writeShort","writeInt","writeInt","writeInt","writeInt64","writeInt64","writeString","writeBool"]
+
+def lua_type_map_to_func(type,is_read):
+    for i in range(0,len(data_type)):
+        if data_type[i] == type:
+            if is_read == True:
+                return read_func[i]
+            else:
+                return write_func[i]
+
+def generate_lua_protocol(fp, str, struct_name):
+    head_str = "local " + struct_name + " = class(\"" + struct_name + "\", message)\n\n"
+    fp.write(head_str)
+    fp.write("function " + struct_name + ":ctor()\n")
+    fp.write("    self.super.ctor(self,0)\n")
+    fp.write("end\n\n")
+
+    fp.write("function " + struct_name + ":packet_to(packet)\n")
+    # packet_to 的内容
+    print len(str)
+    for i in range(0,len(str)):
+        element = str[i]
+        key = element[0]
+        value = element[1]
+        print element, key , value
+        parse_element_packet_to_lua(fp,key,value)
+
+    fp.write("end\n\n")
+
+    fp.write("function " + struct_name + ":to_packet(packet)\n")
+    # to_packet 的内容
+    for i in range(0, len(str)):
+        element = str[i]
+        key = element[0]
+        value = element[1]
+        parse_element_to_packet_lua(fp,key,value)
+    fp.write("end\n\n")
+
+    fp.write("return " + struct_name)
+
+    fp.flush()
+    fp.close()
+
 
 def generate_struct(fp,str,struct_name):
     head_str = "struct" + " " + struct_name + " {\n"
@@ -82,15 +126,88 @@ def is_inner_type(str):
 
     return False
 
-def is_vector_type(str):
-    if str[0] == '*' and str[1] != '*':
-        return True
-    return False
+def parse_element_to_packet_lua(fp, k, v):
+    func_name = lua_type_map_to_func(v,False)
+    #封包
+    if is_inner_type(v) == True:
+        fp.write("    packet:" + func_name + "(self." + k.lower() + ")\n")
+    elif util.is_list(v) and len(v) == 1:#vector
+        table_name = v[0].lower() + "_list"
+        fp.write("    self." + table_name + " = self." + table_name + " or {}\n")
+        fp.write("    local len = #self." + table_name + "\n")
+        fp.write("    packet:writeInt(len)\n")
+        fp.write("    for i = 1,len do\n")
+        if is_inner_type(v[0]) == True:
+            func_name = lua_type_map_to_func(v[0],False)
+            fp.write("        packet:" + func_name + "(self." + table_name + ")\n")
+            fp.write("        end\n")
+        else:
+            fp.write("        self." + table_name + "to_packet(packet)\n")
+            fp.write("    end\n")
+    elif util.is_list(v) and len(v) == 2:#map
+        table_name = v[0].lower() + "_record"
+        fp.write("    self." + table_name + " = self." + table_name + " or {}\n")
+        #计算出record中的长度  不能简单的用#去取 要通过for k,v in pairs获得长度
+        fp.write("    local len = 0\n")
+        fp.write("    for k,v in pairs(self." + table_name + ") do\n")
+        fp.write("        len = len + 1\n")
+        fp.write("    end\n")
 
-def is_map_type(str):
-    if str[0] == '*' and str[1] == '*':
-        return True
-    return False
+        fp.write("    packet:writeInt(len)\n")
+        fp.write("    for k,v in pairs(self." + table_name + ") do\n")
+
+        key_func = lua_type_map_to_func(v[0],False)
+        fp.write("        packet:" + key_func + "(k)\n")
+
+        if is_inner_type(v[1]) == True:
+            func_name = lua_type_map_to_func(v[1],False)
+            fp.write("        packet:" + func_name + "(v)\n")
+        else:
+            fp.write("        v:to_packet(packet)\n")
+
+        fp.write("    end\n")
+        pass
+
+def parse_element_packet_to_lua(fp, k, v):
+    func_name = lua_type_map_to_func(v,True)
+    #解包
+    if is_inner_type(v) == True:
+        fp.write("    self." + k.lower() + " = packet:" + func_name + "()\n")
+    elif util.is_list(v) and len(v) == 1:#vector
+        fp.write("    local len = packet:readInt()\n")
+        table_name = v[0].lower() + "_list"
+        fp.write("    local " + table_name + " = {}\n")
+        if is_inner_type(v[0]) == True:
+            func_name = lua_type_map_to_func(v[0],True)
+            fp.write("    local tmp = packet:" + func_name + "()\n")
+            fp.write("    self." + table_name + "[#self." + table_name + " + 1] = tmp\n")
+            pass
+        else:
+            fp.write("    for i = 1,len do\n")
+            fp.write("        local tmp = require(\"lua.component.protocol." + v[0] + "\").new()\n")
+            fp.write("        tmp:packet_to(packet)\n")
+            fp.write("        self." + table_name + "[#self." + table_name + " + 1] = tmp\n")
+            fp.write("    end\n")
+            pass
+    elif util.is_list(v) and len(v) == 2:#map
+        fp.write("    local len = packet:readInt()\n")
+        table_name = k.lower() + "_record"
+        fp.write("    local " + table_name + " = {}\n")
+        ##v[0] 肯定是内置对象  v[1] 不见得
+        key_func = lua_type_map_to_func(v[0],True)
+        fp.write("    for i = 1, len do\n")
+        fp.write("        local key = packet:" + key_func + "()\n")
+        if is_inner_type(v[1]) == True:
+            func_name = lua_type_map_to_func(v[1],True)
+            fp.write("        local value = packet:" + func_name + "()\n")
+        else:
+            fp.write("        local value = require(\"lua.component.protocol." + v[1] + "\").new()\n")
+            fp.write("        value:packet_to(packet)\n")
+
+        fp.write("        self." + table_name + "[key] = value\n")
+
+        fp.write("    end\n")
+
 
 def parse_element_from_packet(fp, k, v):
     if is_inner_type(v) == True:
